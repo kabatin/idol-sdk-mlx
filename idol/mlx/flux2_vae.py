@@ -152,6 +152,8 @@ class Flux2VAEEncoder(nn.Module):
         from huggingface_hub import hf_hub_download
         with open(hf_hub_download(repo, f'{subfolder}/config.json')) as f:
             config = json.load(f)
+        if config.get('act_fn', 'silu') != 'silu' or tuple(config.get('patch_size', (2, 2))) != (2, 2):
+            raise ValueError(f'{repo}: only the SiLU VAE with 2x2 latent patches is supported')
         model = cls(in_channels=config['in_channels'], block_out_channels=config['block_out_channels'],
                     layers_per_block=config['layers_per_block'], latent_channels=config['latent_channels'],
                     norm_num_groups=config['norm_num_groups'],

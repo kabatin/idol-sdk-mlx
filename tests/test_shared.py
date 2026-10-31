@@ -50,9 +50,12 @@ def test_decode_camera_falls_back_to_the_front_view_for_a_zero_direction():
     assert camera['pitch'] == pytest.approx(np.pi / 2)
 
 
-@pytest.mark.parametrize('module', ['idol', 'idol.ply', 'idol.camera', 'idol.hub', 'idol.preprocess'])
+@pytest.mark.parametrize('module', ['idol', 'idol.ply', 'idol.camera', 'idol.hub', 'idol.preprocess',
+                                    'idol.sample', 'idol.mlx', 'idol.mlx.pipeline'])
 def test_shared_modules_import_without_torch(module):
-    code = f'import sys, {module}; assert "torch" not in sys.modules, sorted(m for m in sys.modules if "torch" in m)'
+    heavy = ('torch', 'tensordict', 'transformers', 'diffusers', 'torchvision')
+    code = (f'import sys, {module}; loaded = [m for m in {heavy!r} if m in sys.modules]; '
+            f'assert not loaded, loaded')
     subprocess.run([sys.executable, '-c', code], check=True)
 
 
@@ -62,3 +65,18 @@ def test_package_still_exposes_the_torch_api():
     assert idol.Gaussian is Gaussian
     with pytest.raises(AttributeError):
         idol.does_not_exist
+
+
+def test_submodules_are_reachable_as_attributes_after_a_bare_import():
+    code = 'import idol; assert idol.pipeline.IdolPipeline and idol.gaussian.Gaussian and idol.camera.decode_camera'
+    subprocess.run([sys.executable, '-c', code], check=True)
+
+
+def test_decode_camera_still_accepts_torch_tensors():
+    latent = [0.3, -0.5, 0.8, 0.4, 0.2]
+    expected = decode_camera(np.array(latent, dtype=np.float32))
+    for tensor in (torch.tensor(latent), torch.tensor(latent, dtype=torch.bfloat16),
+                   torch.tensor(latent, dtype=torch.float16)):
+        camera = decode_camera(tensor)
+        for key in expected:
+            assert camera[key] == pytest.approx(expected[key], rel=1e-2)

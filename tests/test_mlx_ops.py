@@ -69,3 +69,17 @@ def test_batch_norm_eval_matches_torch():
         m[name] = to_mx(getattr(bn, name))
     x = torch.randn(2, 6, 5, 4)
     assert_close(_nchw(m(_nhwc(x))), bn(x))
+
+
+def test_deform_conv2d_accumulates_the_taps_in_fp32():
+    """49 taps of a 7x7 kernel over post-ReLU inputs: summed in fp16 the error is ~2x that of an fp32 sum."""
+    g = torch.Generator().manual_seed(11)
+    x = torch.relu(torch.randn(1, 64, 48, 48, generator=g)) * 2
+    weight = torch.randn(256, 64, 7, 7, generator=g) * 0.05
+    offset, mask = torch.randn(1, 98, 48, 48, generator=g), torch.rand(1, 49, 48, 48, generator=g) * 2
+    expected = deform_conv2d(x, offset, weight, padding=3, mask=mask).numpy()
+    actual = ops.deform_conv2d(_nhwc(x).astype(mx.float16), _nhwc(offset).astype(mx.float16),
+                               to_mx(weight.permute(0, 2, 3, 1), mx.float16), _nhwc(mask).astype(mx.float16), padding=3)
+    assert actual.dtype == mx.float16
+    err = _nchw(actual).numpy() - expected
+    assert np.sqrt((err ** 2).mean()) / expected.std() < 8e-4

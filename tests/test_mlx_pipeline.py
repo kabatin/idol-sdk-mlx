@@ -114,3 +114,90 @@ def test_restores_the_callers_cache_limit(pipeline, image):
     pipeline(image, steps=1, num_gaussians=640)
     assert mx.set_cache_limit(callers) == callers       # set_cache_limit returns the limit it replaces
     assert P.CACHE_LIMIT < callers
+
+
+@pytest.mark.parametrize('seed', [-1, -(2 ** 63), 2 ** 64 + 5])
+def test_any_integer_seed_works_and_is_reproducible(pipeline, image, seed):
+    a, b = (pipeline(image, steps=1, num_gaussians=640, seed=seed) for _ in range(2))
+    assert mx.array_equal(a.gaussian.xyz, b.gaussian.xyz)
+
+
+def test_overlapping_calls_keep_the_cap_and_restore_the_callers_limit():
+    """A enters, B enters, A leaves while B still runs: B must stay capped, and the caller's limit comes back."""
+    import threading
+    from idol.mlx import pipeline as P
+    callers = 3 * 2 ** 30
+    mx.set_cache_limit(callers)
+    a_in, b_in, a_out = threading.Event(), threading.Event(), threading.Event()
+    seen = {}
+
+    def a():
+        with P._bounded_cache():
+            a_in.set()
+            b_in.wait()
+        a_out.set()
+
+    def b():
+        a_in.wait()
+        with P._bounded_cache():
+            b_in.set()
+            a_out.wait()
+            limit = mx.set_cache_limit(P.CACHE_LIMIT)     # returns the limit in force
+            mx.set_cache_limit(limit)
+            seen['b after a left'] = limit
+
+    threads = [threading.Thread(target=a), threading.Thread(target=b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert seen['b after a left'] == P.CACHE_LIMIT
+    assert mx.set_cache_limit(callers) == callers
+
+
+def test_warns_when_tf32_is_on(monkeypatch):
+    from idol.mlx import pipeline as P
+    monkeypatch.setattr(P, '_fp32_matmul_error', lambda: 1e-3)
+    with pytest.warns(RuntimeWarning, match='TF32'):
+        P._check_fp32_matmuls()
+    monkeypatch.setattr(P, '_fp32_matmul_error', lambda: 1e-7)
+    P._check_fp32_matmuls()     # no warning
+
+
+def test_from_pretrained_loads_a_local_folder(tmp_path, monkeypatch):
+    """The real loading code (config keys, constructors, safetensors names) with small random torch modules."""
+    import json
+    import torch
+    from safetensors.torch import save_file
+    from idol.mlx import pipeline as P
+    from idol.models import GaussianFixedlenDecoder as TGS, LatentSeqMMFlowModel as TDiT
+    from idol.models import OctreeProbabilityFixedlenDecoder as TOctree
+    from idol.models.birefnet import BiRefNet as TBiRefNet
+    from _parity import randomize_
+    config = {
+        'denoiser': {'args': dict(q_token_length=64, in_channels=16, cam_channels=5, model_channels=128,
+                                  cond_channels=32, cond2_channels=8, num_blocks=2, num_heads=2)},
+        'decoder': {'args': dict(model_channels=128, cond_channels=16, num_blocks=2, num_heads=2)},
+        'decoder_gs': {'args': dict(in_channels=3, model_channels=128, cond_channels=16, num_blocks=2, num_heads=2,
+                                    representation_config=REP)},
+        'image_size': 64, 'max_voxel_level': 4,
+        'image_encoders': {'dinov3': 'example/dinov3', 'flux2_vae': 'example/flux2'},
+    }
+    (tmp_path / 'config.json').write_text(json.dumps(config))
+    modules = {'denoiser': TDiT(**config['denoiser']['args']), 'decoder': TOctree(**config['decoder']['args']),
+               'decoder_gs': TGS(**config['decoder_gs']['args']), 'birefnet': TBiRefNet()}
+    for name, module in modules.items():
+        state = randomize_(module, seed=1).state_dict()
+        save_file({k: v.contiguous() for k, v in state.items()}, str(tmp_path / f'{name}.safetensors'))
+    checked, encoders = [], []
+    monkeypatch.setattr(P, 'require_encoder_access', checked.append)
+    monkeypatch.setattr(P.ImageEncoder, 'from_pretrained',
+                        classmethod(lambda cls, *args: encoders.append(args) or FakeEncoder()))
+    loaded = P.IdolMLXPipeline.from_pretrained(str(tmp_path), dinov3_dtype='fp32', compile=False)
+    assert checked == [['example/dinov3', 'example/flux2']]
+    assert encoders == [('example/dinov3', 'example/flux2', 'fp32')]
+    assert loaded.denoiser.q_token_length == 64 and loaded.compile is False
+    for name in ('denoiser', 'decoder', 'decoder_gs'):
+        expected = modules[name].state_dict()['out_layer.bias' if name == 'denoiser' else 'out_proj.bias']
+        actual = getattr(loaded, name)['out_layer' if name == 'denoiser' else 'out_proj']['bias']
+        assert np.allclose(np.array(actual), expected.numpy())

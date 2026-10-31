@@ -125,8 +125,9 @@ class DINOv3ViT(nn.Module):
         from huggingface_hub import hf_hub_download
         with open(hf_hub_download(repo, 'config.json')) as f:
             c = json.load(f)
-        if not c.get('use_gated_mlp') or c.get('key_bias', False) or not c.get('query_bias', True):
-            raise ValueError(f'{repo}: only the gated-MLP, no-key-bias DINOv3 layout is supported')
+        if (not c.get('use_gated_mlp') or c.get('key_bias', False) or not c.get('query_bias', True)
+                or c.get('hidden_act', 'silu') != 'silu'):
+            raise ValueError(f'{repo}: only the SiLU gated-MLP, no-key-bias DINOv3 layout is supported')
         model = cls(hidden_size=c['hidden_size'], num_hidden_layers=c['num_hidden_layers'],
                     num_attention_heads=c['num_attention_heads'], intermediate_size=c['intermediate_size'],
                     num_register_tokens=c['num_register_tokens'], patch_size=c['patch_size'],

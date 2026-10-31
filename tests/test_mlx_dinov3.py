@@ -78,3 +78,12 @@ def test_real_weights_match_transformers():
     for dtype, check in ((mx.float32, lambda a: assert_close(a, expected, rtol=2e-3)),
                          (mx.bfloat16, lambda a: assert_rms_close(a, expected, 3e-2))):
         check(DINOv3ViT.from_pretrained(repo, dtype=dtype)(to_mx(pixels.permute(0, 2, 3, 1))))
+
+
+def test_rejects_unsupported_configs(tmp_path, monkeypatch):
+    import json
+    import huggingface_hub
+    (tmp_path / 'config.json').write_text(json.dumps({'hidden_act': 'gelu', 'use_gated_mlp': True}))
+    monkeypatch.setattr(huggingface_hub, 'hf_hub_download', lambda repo, name: str(tmp_path / 'config.json'))
+    with pytest.raises(ValueError, match='only the SiLU'):
+        DINOv3ViT.from_pretrained('example/repo')

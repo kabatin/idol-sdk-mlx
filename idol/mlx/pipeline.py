@@ -3,6 +3,8 @@ idol.IdolPipeline; same seed, same object within this backend (MLX's random numb
 objects differ from the CUDA backend's)."""
 import json
 import os
+import threading
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -32,15 +34,50 @@ WEIGHT_FILES = ['config.json', 'denoiser.safetensors', 'decoder.safetensors', 'd
 CACHE_LIMIT = 2 * 2 ** 30
 
 
+_cache_lock = threading.Lock()
+_cache_users = 0
+_cache_previous = 0
+
+
 @contextmanager
 def _bounded_cache(limit: int = CACHE_LIMIT):
-    """Cap MLX's buffer cache while the pipeline runs, restore the caller's limit and free the cache afterwards."""
-    previous = mx.set_cache_limit(limit)
+    """Cap MLX's buffer cache while pipeline calls run; the first call in saves the caller's limit, the last one out
+    restores it and frees the cache (overlapping calls, e.g. a Gradio queue, stay capped throughout)."""
+    global _cache_users, _cache_previous
+    with _cache_lock:
+        if _cache_users == 0:
+            _cache_previous = mx.set_cache_limit(limit)
+        _cache_users += 1
     try:
         yield
     finally:
-        mx.set_cache_limit(previous)
-        mx.clear_cache()
+        with _cache_lock:
+            _cache_users -= 1
+            if _cache_users == 0:
+                mx.set_cache_limit(_cache_previous)
+                mx.clear_cache()
+
+
+def _fp32_matmul_error() -> float:
+    """Relative error of a small fp32 matmul on the GPU (TF32: ~1e-3; full fp32: ~1e-7)."""
+    rng = np.random.default_rng(0)
+    a, b = rng.standard_normal((64, 256)).astype(np.float32), rng.standard_normal((256, 64)).astype(np.float32)
+    exact = a.astype(np.float64) @ b.astype(np.float64)
+    return float(np.abs(np.array(mx.array(a) @ mx.array(b)) - exact).max() / np.abs(exact).max())
+
+
+def _check_fp32_matmuls() -> None:
+    """MLX reads MLX_ENABLE_TF32 at its first matmul: if anything ran one before idol.mlx was imported, the
+    setting idol.mlx makes is too late and the fp32 layers silently run in TF32."""
+    if _fp32_matmul_error() > 1e-4:
+        warnings.warn('MLX runs fp32 matmuls in TF32 (MLX ran a matmul before `import idol.mlx`, or '
+                      'MLX_ENABLE_TF32=1): the fp32 layers lose precision. Set MLX_ENABLE_TF32=0 before using MLX.',
+                      RuntimeWarning, stacklevel=3)
+
+
+def _seed64(seed: int) -> int:
+    """Any integer seed (torch accepts negative ones) -> the 64-bit range MLX's and numpy's generators take."""
+    return int(seed) % 2 ** 64
 
 
 @dataclass
@@ -66,6 +103,7 @@ class IdolMLXPipeline:
     @classmethod
     def from_pretrained(cls, repo_or_dir: str = DEFAULT_REPO, dinov3_dtype: str = 'bf16',
                         compile: bool = True) -> 'IdolMLXPipeline':
+        _check_fp32_matmuls()
         if os.path.isdir(repo_or_dir):
             weights_dir = repo_or_dir
         else:
@@ -124,7 +162,7 @@ class IdolMLXPipeline:
         prepared = self.preprocess(image, mode=mode, crop_margin=crop_margin)
         pixels = mx.array(np.asarray(prepared, dtype=np.float32) / 255.0)[None]
 
-        key_vae, key_latent, key_camera = mx.random.split(mx.random.key(seed), 3)
+        key_vae, key_latent, key_camera = mx.random.split(mx.random.key(_seed64(seed)), 3)
         cond = self.image_encoder(pixels, key=key_vae)
         denoiser = self.denoiser
         latent = mx.random.normal((1, denoiser.q_token_length, denoiser.in_channels), key=key_latent)
@@ -141,6 +179,7 @@ class IdolMLXPipeline:
         """Latent [1, 8192, 16] -> Gaussians: the octree decoder places num_gaussians / 32 anchor points, the
         Gaussian decoder turns each anchor into 32 Gaussians."""
         gaussian = decode_gaussians(self.decoder, self.decoder_gs, latent, num_gaussians,
-                                    level=self.config['max_voxel_level'], uniform=np.random.default_rng(seed).random)
+                                    level=self.config['max_voxel_level'],
+                                    uniform=np.random.default_rng(_seed64(seed)).random)
         mx.eval(gaussian.xyz, gaussian.features_dc, gaussian.scaling, gaussian.rotation, gaussian.opacity)
         return gaussian

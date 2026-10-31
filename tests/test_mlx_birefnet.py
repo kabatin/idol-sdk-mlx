@@ -1,5 +1,6 @@
 """The MLX BiRefNet (Swin-L backbone, ASPP-deformable decoder) against torch."""
 import mlx.core as mx
+from mlx.utils import tree_map
 import numpy as np
 import pytest
 import torch
@@ -40,6 +41,21 @@ def test_forward_matches_torch(random_pair):
     with torch.no_grad():
         expected = t(x)
     assert_close(m(_nhwc(x)), expected.permute(0, 2, 3, 1), rtol=1e-3, atol=1e-4)
+
+
+def test_fp16_forward_stays_close_to_torch_fp32(random_pair):
+    """The production dtype (fp16 weights, BN statistics and deformable convolutions), without downloads."""
+    from _parity import assert_rms_close
+    t, m32 = random_pair
+    m16 = M.BiRefNet(dtype=mx.float16)
+    m16.update(m32.parameters())
+    m16.update(tree_map(lambda p: p.astype(mx.float16), m16.parameters()))
+    x = torch.randn(1, 3, 256, 256, generator=torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        expected = t(x)
+    actual = m16(_nhwc(x).astype(mx.float16))
+    assert actual.dtype == mx.float16
+    assert_rms_close(actual, expected.permute(0, 2, 3, 1), 2e-2)
 
 
 def test_remove_background_matches_torch(random_pair):

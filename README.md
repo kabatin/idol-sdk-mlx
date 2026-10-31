@@ -125,11 +125,12 @@ Same weights, same gated encoders and the same arguments and outputs as `IdolPip
 - **Precision follows the CUDA path:** fp16 transformer blocks with fp32 norms, embeddings and output layers in the
   denoiser and decoders, bf16 DINOv3 and VAE, fp16 BiRefNet. Every module is tested against the torch one: fp32 runs
   agree within 2e-3, the fp16 denoiser and decoders within 1e-2 relative RMS (torch's own fp16 run is at 5e-3).
-- **Same seed, same object** within the MLX backend. MLX draws different random numbers than torch, so the object
+- **Same seed, same object** within the MLX backend (any integer seed). MLX draws different random numbers than torch, so the object
   differs from the CUDA backend's for the same seed.
 - `idol.mlx` sets `MLX_ENABLE_TF32=0` (on M5, MLX would compute fp32 matmuls in TF32) and `MLX_CONV_WINOGRAD=0`
-  (Winograd convolutions double the bf16 VAE error) unless you set them; and caps MLX's buffer cache at 2 GiB while
-  a pipeline call runs.
+  (Winograd convolutions double the bf16 VAE error) unless you set them. MLX reads them at its first matmul /
+  convolution, so import `idol.mlx` before running other MLX code in the same process (`from_pretrained` warns if
+  TF32 is on). It also caps MLX's buffer cache at 2 GiB while pipeline calls run.
 - `--no_optimize` turns off `mx.compile` of the sampling step. A fused Metal kernel handles RoPE, the q/k
   normalisation and the transposes of the denoiser attention.
 

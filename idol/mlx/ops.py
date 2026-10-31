@@ -57,8 +57,8 @@ def deform_conv2d(x: mx.array, offset: mx.array, weight: mx.array, mask: mx.arra
     """Modulated deformable convolution (torchvision.ops.deform_conv2d, stride 1, one offset group).
 
     x [B, H, W, Cin]; offset [B, H', W', 2K] as (dy, dx) per kernel tap (row-major taps); mask [B, H', W', K];
-    weight [Cout, kh, kw, Cin] (MLX layout). Samples are interpolated in fp32, tap by tap, and each tap's
-    contribution is one matmul in the input dtype."""
+    weight [Cout, kh, kw, Cin] (MLX layout). Samples are interpolated in fp32, tap by tap; each tap's contribution
+    is one matmul in the input dtype, summed over the taps in fp32 (like torchvision's single GEMM)."""
     B, H, W, C = x.shape
     Cout, kh, kw, _ = weight.shape
     Ho, Wo = H + 2 * padding - kh + 1, W + 2 * padding - kw + 1
@@ -73,11 +73,11 @@ def deform_conv2d(x: mx.array, offset: mx.array, weight: mx.array, mask: mx.arra
             k = i * kw + j
             sampled = _bilinear_gather(flat, base_y + i + offset[:, :, k, 0], base_x + j + offset[:, :, k, 1], H, W)
             sampled = (sampled * mask[:, :, k, None]).astype(x.dtype)
-            term = sampled @ weight[:, i, j, :].T
+            term = (sampled @ weight[:, i, j, :].T).astype(F32)
             out = term if out is None else out + term
     if bias is not None:
-        out = out + bias
-    return out.reshape(B, Ho, Wo, Cout)
+        out = out + bias.astype(F32)
+    return out.astype(x.dtype).reshape(B, Ho, Wo, Cout)
 
 
 class BatchNorm2d(nn.Module):

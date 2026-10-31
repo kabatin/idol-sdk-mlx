@@ -8,7 +8,12 @@ __all__ = list(_LAZY)
 
 
 def __getattr__(name):
-    if name not in _LAZY:
-        raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
     import importlib
-    return getattr(importlib.import_module(_LAZY[name], __name__), name)
+    if name in _LAZY:
+        return getattr(importlib.import_module(_LAZY[name], __name__), name)
+    try:   # a submodule (idol.pipeline, idol.gaussian, ...), as a plain package import would expose it
+        return importlib.import_module(f'.{name}', __name__)
+    except ModuleNotFoundError as error:
+        if error.name != f'{__name__}.{name}':
+            raise
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

@@ -82,3 +82,12 @@ def test_real_weights_match_diffusers():
         mean = vae.encode(images * 2 - 1).latent_dist.mean
     actual, _ = m.moments(nhwc(images * 2 - 1).astype(mx.bfloat16))
     assert_rms_close(actual, mean.permute(0, 2, 3, 1), 2e-2)
+
+
+def test_rejects_unsupported_configs(tmp_path, monkeypatch):
+    import json
+    import huggingface_hub
+    (tmp_path / 'config.json').write_text(json.dumps({'act_fn': 'relu', 'use_gated_mlp': True}))
+    monkeypatch.setattr(huggingface_hub, 'hf_hub_download', lambda repo, name: str(tmp_path / 'config.json'))
+    with pytest.raises(ValueError, match='only the SiLU'):
+        Flux2VAEEncoder.from_pretrained('example/repo')
