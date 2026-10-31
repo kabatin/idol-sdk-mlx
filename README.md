@@ -98,8 +98,11 @@ with the example images. It runs on ZeroGPU there and on any local GPU:
 
 ```bash
 pip install -e ".[demo]"
-cd demo && python app.py
+cd demo && python app.py                 # IDOL_BACKEND=mlx|torch|auto (auto: MLX on Apple Silicon)
 ```
+
+The demo needs Python 3.12 or 3.13 (the Space runs 3.12; `gradio==5.49.1` does not build on 3.14). The SDK and the
+MLX backend work on 3.14.
 
 ## Apple Silicon (MLX)
 
