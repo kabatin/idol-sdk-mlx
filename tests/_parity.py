@@ -7,11 +7,12 @@ from idol.mlx.weights import load_torch_weights
 
 
 def randomize_(module: torch.nn.Module, seed: int = 0, std: float = 0.05) -> torch.nn.Module:
-    """Give every float parameter and buffer a random value (zero-initialised tables would hide porting bugs).
-    Norm weights and RMS gammas stay around 1, RoPE frequencies around their initial values."""
+    """Give every float tensor of the state dict a random value (zero-initialised tables would hide porting bugs).
+    Non-persistent buffers (constants recomputed by both ports) are left alone. Norm weights and RMS gammas stay
+    around 1, RoPE frequencies around their initial values."""
     g = torch.Generator().manual_seed(seed)
     with torch.no_grad():
-        for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
+        for name, tensor in module.state_dict(keep_vars=True).items():
             if not tensor.is_floating_point():
                 continue
             noise = torch.randn(tensor.shape, generator=g, dtype=torch.float32)
@@ -53,7 +54,9 @@ def to_mx(t: torch.Tensor, dtype=mx.float32):
 def to_np(a) -> np.ndarray:
     if isinstance(a, torch.Tensor):
         return a.detach().float().cpu().numpy()
-    return np.array(a.astype(mx.float32))
+    if isinstance(a, mx.array):
+        return np.array(a.astype(mx.float32))
+    return np.asarray(a, dtype=np.float32)
 
 
 def assert_close(actual, expected, rtol=1e-4, atol=1e-5):
@@ -62,3 +65,12 @@ def assert_close(actual, expected, rtol=1e-4, atol=1e-5):
     scale = max(float(np.abs(expected).max()), 1e-6)
     err = float(np.abs(actual - expected).max())
     assert err <= atol + rtol * scale, f'max abs error {err:.3e} (scale {scale:.3e})'
+
+
+def assert_rms_close(actual, expected, rtol):
+    """Relative RMS error: for fp16 paths, whose max error is dominated by a few outliers (torch's own fp16 run
+    has the same ones)."""
+    actual, expected = to_np(actual).astype(np.float64), to_np(expected).astype(np.float64)
+    assert actual.shape == expected.shape, (actual.shape, expected.shape)
+    err = np.sqrt(np.mean((actual - expected) ** 2)) / max(np.sqrt(np.mean(expected ** 2)), 1e-12)
+    assert err <= rtol, f'relative rms error {err:.3e} > {rtol:.1e}'
