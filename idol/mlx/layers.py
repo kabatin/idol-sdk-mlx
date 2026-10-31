@@ -9,6 +9,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from . import kernels
+
 F32 = mx.float32
 
 
@@ -253,6 +255,10 @@ class RopeMultiHeadAttention(nn.Module):
     def __call__(self, x: mx.array, rope_emb: Tuple[mx.array, mx.array]) -> mx.array:
         B, L, C = x.shape
         qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim)
+        if kernels.supported(qkv):   # fp16/bf16 on the GPU: rotate, normalise and transpose in one kernel
+            q, k, v = kernels.rope_rmsnorm_qkv(qkv, *rope_emb, self.q_norm.gamma, self.k_norm.gamma, self.q_norm.scale)
+            out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.head_dim ** -0.5)
+            return self.out(out.transpose(0, 2, 1, 3).reshape(B, L, C))
         q = self.q_norm(apply_rotary_emb(qkv[:, :, 0], rope_emb))
         k = self.k_norm(apply_rotary_emb(qkv[:, :, 1], rope_emb))
         return self.out(scaled_dot_product_attention(q, k, qkv[:, :, 2]).reshape(B, L, C))

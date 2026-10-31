@@ -105,3 +105,12 @@ def test_lazy_exports():
     assert idol.mlx.IdolMLXPipeline is IdolMLXPipeline
     with pytest.raises(AttributeError):
         idol.mlx.nothing_here
+
+
+def test_restores_the_callers_cache_limit(pipeline, image):
+    from idol.mlx import pipeline as P
+    callers = 3 * 2 ** 30
+    mx.set_cache_limit(callers)
+    pipeline(image, steps=1, num_gaussians=640)
+    assert mx.set_cache_limit(callers) == callers       # set_cache_limit returns the limit it replaces
+    assert P.CACHE_LIMIT < callers

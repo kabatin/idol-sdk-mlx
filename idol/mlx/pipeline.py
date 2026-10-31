@@ -3,6 +3,7 @@ idol.IdolPipeline; same seed, same object within this backend (MLX's random numb
 objects differ from the CUDA backend's)."""
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -24,6 +25,22 @@ from .weights import load_torch_weights
 DEFAULT_REPO = 'speridlabs/idol'
 WEIGHT_FILES = ['config.json', 'denoiser.safetensors', 'decoder.safetensors', 'decoder_gs.safetensors',
                 'birefnet.safetensors']
+
+
+# MLX keeps freed buffers for reuse. Unbounded, BiRefNet's and the octree's many differently shaped temporaries grew
+# that cache to ~20 GB per image (19-26 GB process footprint on a 32 GB Mac); 2 GiB costs the sampling loop ~4%.
+CACHE_LIMIT = 2 * 2 ** 30
+
+
+@contextmanager
+def _bounded_cache(limit: int = CACHE_LIMIT):
+    """Cap MLX's buffer cache while the pipeline runs, restore the caller's limit and free the cache afterwards."""
+    previous = mx.set_cache_limit(limit)
+    try:
+        yield
+    finally:
+        mx.set_cache_limit(previous)
+        mx.clear_cache()
 
 
 @dataclass
@@ -66,7 +83,7 @@ class IdolMLXPipeline:
         def load(model, name):
             return load_torch_weights(model, os.path.join(weights_dir, f'{name}.safetensors'))
 
-        return cls(
+        pipeline = cls(
             config=config,
             denoiser=load(LatentSeqMMFlowModel(**config['denoiser']['args']), 'denoiser'),
             decoder=load(OctreeProbabilityFixedlenDecoder(**config['decoder']['args']), 'decoder'),
@@ -75,6 +92,8 @@ class IdolMLXPipeline:
             image_encoder=ImageEncoder.from_pretrained(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype),
             compile=compile,
         )
+        mx.clear_cache()   # the fp32 checkpoints cast on load
+        return pipeline
 
     def preprocess(self, image: Union[str, Image.Image], mode: str = 'synthetic',
                    crop_margin: Optional[float] = None) -> Image.Image:
@@ -96,6 +115,12 @@ class IdolMLXPipeline:
         mode / crop_margin: see ``preprocess``. num_gaussians: 32,768 to 1,048,576, rounded down to a multiple of 32."""
         if steps < 1:
             raise ValueError(f'steps must be at least 1, got {steps}')
+        with _bounded_cache():
+            return self._generate(image, mode, seed, steps, cfg_strength, rescale_t, num_gaussians, crop_margin,
+                                  verbose)
+
+    def _generate(self, image, mode, seed, steps, cfg_strength, rescale_t, num_gaussians, crop_margin,
+                  verbose) -> IdolOutput:
         prepared = self.preprocess(image, mode=mode, crop_margin=crop_margin)
         pixels = mx.array(np.asarray(prepared, dtype=np.float32) / 255.0)[None]
 
