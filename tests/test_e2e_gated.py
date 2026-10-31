@@ -46,8 +46,12 @@ def conditions(config, prepared, monkeypatch_module):
     pixels = np.asarray(prepared, dtype=np.float32) / 255.0
 
     monkeypatch_module.setattr(DiagonalGaussianDistribution, 'sample', lambda self, generator=None: self.mean)
-    torch_encoder = TorchEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype='fp32', device='cpu')
-    expected = torch_encoder(torch.tensor(pixels).permute(2, 0, 1)[None])
+    # The torch path in fp32: bf16 convolutions on a Mac CPU run single-threaded, ~500x slower than fp32 (the
+    # 1024 x 1024 VAE alone took over half an hour). The reference only gets more exact.
+    with pytest.MonkeyPatch.context() as fp32_only:
+        fp32_only.setattr(torch, 'bfloat16', torch.float32)
+        torch_encoder = TorchEncoder(encoders['dinov3'], encoders['flux2_vae'], dinov3_dtype='fp32', device='cpu')
+        expected = torch_encoder(torch.tensor(pixels).permute(2, 0, 1)[None])
     del torch_encoder
 
     mlx_encoder = MLXEncoder.from_pretrained(encoders['dinov3'], encoders['flux2_vae'])
@@ -71,10 +75,13 @@ def test_conditioning_tokens_match_torch(conditions):
     assert feature1.shape == tuple(expected['feature1'].shape) == (1, 4101, 1280)
     assert feature2.shape == tuple(expected['feature2'].shape) == (1, 4101, 128)
     assert_rms_close(feature1, expected['feature1'], 5e-2)    # MLX DINOv3 in bf16 against torch fp32
-    assert_rms_close(feature2, expected['feature2'], 5e-2)    # bf16 VAE on both sides
+    assert_rms_close(feature2, expected['feature2'], 5e-2)    # MLX VAE in bf16 against torch fp32
 
 
 def test_two_guided_steps_match_torch(config, weights_dir, conditions):
+    """Two guided steps from the same noise. The guided velocity amplifies the condition's error ((1 + w) = 4x):
+    torch's own production dtypes (bf16 DINOv3 and VAE, on MPS) move this latent 1.05e-1 relative RMS from the fp32
+    run, while the denoiser itself (same condition, fp16 vs fp32) only accounts for ~1e-2."""
     from safetensors.torch import load_file
     from idol.mlx.dit import LatentSeqMMFlowModel as MDiT
     from idol.mlx.sampler import sample_flow as m_sample_flow
@@ -94,8 +101,16 @@ def test_two_guided_steps_match_torch(config, weights_dir, conditions):
     del reference
 
     model = load_torch_weights(MDiT(**config['denoiser']['args']), os.path.join(weights_dir, 'denoiser.safetensors'))
-    latent, camera = m_sample_flow(model, to_mx(noise['latent']), to_mx(noise['camera']), cond=mlx_cond,
-                                   neg_cond=tuple(mx.zeros_like(c) for c in mlx_cond), steps=2, verbose=False,
-                                   compile=True)
-    assert_rms_close(latent, expected['latent'], 5e-2)
+
+    def sample(cond):
+        return m_sample_flow(model, to_mx(noise['latent']), to_mx(noise['camera']), cond=cond,
+                             neg_cond=tuple(mx.zeros_like(c) for c in cond), steps=2, verbose=False, compile=True)
+
+    # the port: the fp16 denoiser given torch's condition
+    latent, camera = sample((to_mx(expected_cond['feature1']), to_mx(expected_cond['feature2'])))
+    assert_rms_close(latent, expected['latent'], 2e-2)
+    assert_rms_close(camera, expected['camera'], 1e-2)
+    # the whole MLX chain, within the spread of torch's own bf16 encoders
+    latent, camera = sample(mlx_cond)
+    assert_rms_close(latent, expected['latent'], 1.5e-1)
     assert_rms_close(camera, expected['camera'], 5e-2)
