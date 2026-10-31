@@ -133,9 +133,10 @@ Same weights, same gated encoders and the same arguments and outputs as `IdolPip
 - `--no_optimize` turns off `mx.compile` of the sampling step. A fused Metal kernel handles RoPE, the q/k
   normalisation and the transposes of the denoiser attention.
 
-On an M5 MacBook (10-core GPU, 32 GB), one image at the default settings (50 steps, 262,144 Gaussians) takes
-**TIME_TOTAL**, of which **TIME_STEPS** is sampling (~4.1 s per step); the peak process footprint is ~9 GB.
-`--steps` trades quality for time linearly.
+On an M5 MacBook (10-core GPU, 32 GB, macOS 26.5, mlx 0.32.4), one image at the default settings (50 steps,
+262,144 Gaussians) takes **~3.6 minutes** (214-219 s; loading the models: 3 s), almost all of it sampling
+(~4.3 s per step, an fp16 denoiser over 12,294 tokens with guidance); the peak process footprint is ~9 GB.
+Sampling time scales linearly with `--steps`.
 
 Tests: `pip install -e ".[mlx,dev]"`, then `pytest` (no downloads), `pytest -m weights` (the released weights,
 ~3 GB) and `pytest -m gated` (the gated encoders, compared with transformers / diffusers / the torch pipeline).
