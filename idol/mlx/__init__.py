@@ -1,4 +1,9 @@
-"""MLX backend for Apple Silicon: the whole Idol pipeline without PyTorch."""
+"""MLX backend for Apple Silicon: the whole Idol pipeline without PyTorch.
+
+    from idol.mlx import IdolMLXPipeline
+    pipeline = IdolMLXPipeline.from_pretrained("speridlabs/idol")
+    pipeline("photo.jpg", mode="real").gaussian.save_ply("photo.ply")
+"""
 import os
 
 # Precision defaults, read by MLX at the first matmul / convolution, unless the user set them:
@@ -8,3 +13,12 @@ import os
 #   (2.8e-2 vs 1.3e-2 relative RMS; torch bf16: 0.95e-2) for ~0.8 s saved per image.
 os.environ.setdefault('MLX_ENABLE_TF32', '0')
 os.environ.setdefault('MLX_CONV_WINOGRAD', '0')
+
+__all__ = ['IdolMLXPipeline', 'IdolOutput']
+
+
+def __getattr__(name):
+    if name in __all__:
+        from . import pipeline
+        return getattr(pipeline, name)
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
