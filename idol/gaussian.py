@@ -1,7 +1,7 @@
-import numpy as np
 import torch
 import torch.nn.functional as F
-from plyfile import PlyData, PlyElement
+
+from .ply import EPS, quaternion_multiply, write_gaussian_ply  # noqa: F401 (quaternion_multiply: re-exported)
 
 
 def inverse_sigmoid(x):
@@ -35,36 +35,11 @@ class Gaussian:
 
     def save_ply(self, path):
         """Write the standard 3D Gaussian Splatting PLY (z-up object turned to the y-up convention viewers use)."""
-        xyz = self.xyz.detach().cpu().numpy()
-        normals = np.zeros_like(xyz)
-        f_dc = self.features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        # Clamp before the inverse activations: a saturated opacity (exactly 1.0 after the sigmoid) or a zero
-        # scale would otherwise be written as +/-inf, which some PLY viewers reject.
-        eps = 1e-6
-        opacities = inverse_sigmoid(self.opacity.clamp(eps, 1 - eps)).detach().cpu().numpy()
-        scale = torch.log(self.scaling.clamp_min(eps)).detach().cpu().numpy()
-        rotation = self.rotation.detach().cpu().numpy()
-
-        # z-up -> y-up: rotate +90 degrees about x, i.e. (x, y, z) -> (x, -z, y)
-        xyz = np.stack([xyz[:, 0], -xyz[:, 2], xyz[:, 1]], axis=1)
-        rotation = quaternion_multiply(np.array([np.sqrt(0.5), np.sqrt(0.5), 0.0, 0.0]), rotation)
-
-        attributes = np.concatenate((xyz, normals, f_dc, opacities, scale, rotation), axis=1).astype(np.float32)
-        names = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity',
-                 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3']
-        elements = np.empty(attributes.shape[0], dtype=[(name, 'f4') for name in names])
-        for column, name in enumerate(names):
-            elements[name] = attributes[:, column]
-        PlyData([PlyElement.describe(elements, 'vertex')]).write(path)
-
-
-def quaternion_multiply(a, b):
-    """Hamilton product a * b of (w, x, y, z) quaternions; a is one quaternion, b is (N, 4)."""
-    aw, ax, ay, az = a
-    bw, bx, by, bz = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
-    return np.stack([
-        aw * bw - ax * bx - ay * by - az * bz,
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-    ], axis=1)
+        write_gaussian_ply(
+            path,
+            xyz=self.xyz.detach().cpu().numpy(),
+            f_dc=self.features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy(),
+            opacity_logit=inverse_sigmoid(self.opacity.clamp(EPS, 1 - EPS)).detach().cpu().numpy(),
+            log_scale=torch.log(self.scaling.clamp_min(EPS)).detach().cpu().numpy(),
+            rotation=self.rotation.detach().cpu().numpy(),
+        )

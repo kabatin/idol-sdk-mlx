@@ -21,6 +21,16 @@ dependencies = [
 
 [project.optional-dependencies]
 demo = ["gradio==5.49.1", "spaces"]
+mlx = ["mlx>=0.30"]
+dev = ["pytest>=8", "pytest-cov>=5", "torchvision>=0.20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "weights: needs the speridlabs/idol weights (about 3 GB, downloaded on first use)",
+    "gated: needs access to the gated DINOv3 and FLUX.2-dev repos on Hugging Face",
+]
+addopts = "-m 'not weights and not gated'"
 
 [build-system]
 requires = ["hatchling"]

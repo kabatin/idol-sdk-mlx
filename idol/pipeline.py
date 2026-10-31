@@ -125,7 +125,8 @@ class IdolPipeline:
                                  steps=steps, rescale_t=rescale_t, cfg_strength=cfg_strength, verbose=verbose,
                                  batch_cfg=self.optimize)
         gaussian = self.decode(sample['latent'], num_gaussians)
-        return IdolOutput(gaussian=gaussian, preprocessed_image=prepared, camera=decode_camera(sample['camera'][0, 0]))
+        camera = decode_camera(sample['camera'][0, 0].float().cpu().numpy())
+        return IdolOutput(gaussian=gaussian, preprocessed_image=prepared, camera=camera)
 
     @contextmanager
     def _sampling_settings(self):

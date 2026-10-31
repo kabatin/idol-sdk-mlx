@@ -1,13 +1,16 @@
 import math
 
 import numpy as np
-import torch
 
 
-def decode_camera(camera_latent: torch.Tensor) -> dict:
-    """camera_latent [5] -> yaw and pitch (radians), radius and vertical field of view (degrees)."""
-    direction, inverse_distance, half_width = camera_latent[:3].float(), float(camera_latent[3]), float(camera_latent[4])
-    norm = float(torch.norm(direction))
+def decode_camera(camera_latent) -> dict:
+    """camera_latent [5] (numpy, or a torch tensor on any device) -> yaw and pitch (radians), radius and vertical
+    field of view (degrees)."""
+    if hasattr(camera_latent, 'detach'):     # torch: bf16 has no numpy dtype, CUDA tensors need a copy
+        camera_latent = camera_latent.detach().float().cpu().numpy()
+    camera_latent = np.asarray(camera_latent, dtype=np.float32)
+    direction, inverse_distance, half_width = camera_latent[:3], float(camera_latent[3]), float(camera_latent[4])
+    norm = float(np.linalg.norm(direction))
     dx, dy, dz = (direction / norm).tolist() if norm > 1e-6 else (0.0, 0.0, 1.0)
     if inverse_distance < 1e-3:   # orthographic
         radius = 1000.0

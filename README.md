@@ -40,7 +40,8 @@ pip install -e ".[demo]"      # + Gradio, to run the demo locally
 The weights are downloaded from Hugging Face on first use, you need to request access to
 [facebook/dinov3-vith16plus-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m)
 and [black-forest-labs/FLUX.2-dev](https://huggingface.co/black-forest-labs/FLUX.2-dev) first, then log in with
-`hf auth login`. 
+`hf auth login`. Both are under their own licenses (FLUX.2-dev: the FLUX non-commercial license; DINOv3: the DINOv3
+license): check them before commercial use.
 
 `flash-attn`, if installed, is used for attention; otherwise PyTorch's `scaled_dot_product_attention` is (same
 result, slower). Set `ATTN_BACKEND=sdpa` or `ATTN_BACKEND=flash_attn` to choose.
@@ -73,6 +74,7 @@ Other flags:
 | `--num_gaussians` | 262144 | 32,768 to 1,048,576, a multiple of 32 |
 | `--dinov3_dtype` | bf16 | `fp32` runs the DINOv3 encoder in full precision (1.7 GB more memory) |
 | `--weights` | `speridlabs/idol` | a Hugging Face repo or a local folder |
+| `--backend` | `auto` | `mlx` (Apple Silicon, see [below](#apple-silicon-mlx)), `torch`; `auto` picks MLX on Apple Silicon when `mlx` is installed |
 | `--no_optimize` | optimized | turn off the faster sampling (see below) |
 
 **Faster sampling is on by default on GPU** The first image in a process is slower while it pytorch compiles; the rest run at full
@@ -96,8 +98,52 @@ with the example images. It runs on ZeroGPU there and on any local GPU:
 
 ```bash
 pip install -e ".[demo]"
-cd demo && python app.py
+cd demo && python app.py                 # IDOL_BACKEND=mlx|torch|auto (auto: MLX on Apple Silicon)
 ```
+
+The demo needs Python 3.12 or 3.13 (the Space runs 3.12; `gradio==5.49.1` does not build on 3.14). The SDK and the
+MLX backend work on 3.14.
+
+## Apple Silicon (MLX)
+
+The whole pipeline (BiRefNet, DINOv3, the FLUX.2 VAE encoder, the denoiser and both decoders) also runs on
+[MLX](https://github.com/ml-explore/mlx), on the GPU of Apple Silicon Macs, without PyTorch at inference time.
+
+```bash
+pip install -e ".[mlx]"                                   # mlx >= 0.30
+python -m idol.sample --image photo.jpg --mode real        # --backend auto picks MLX on Apple Silicon
+python -m idol.sample --image photo.jpg --backend mlx      # or ask for it
+```
+
+```python
+from idol.mlx import IdolMLXPipeline
+
+pipeline = IdolMLXPipeline.from_pretrained("speridlabs/idol")
+output = pipeline("photo.jpg", mode="real", seed=42)
+output.gaussian.save_ply("photo.ply")
+```
+
+Same weights, same gated encoders and the same arguments and outputs as `IdolPipeline`. Notes:
+
+- **Precision follows the CUDA path:** fp16 transformer blocks with fp32 norms, embeddings and output layers in the
+  denoiser and decoders, bf16 DINOv3 and VAE, fp16 BiRefNet. Every module is tested against the torch one: fp32 runs
+  agree within 2e-3, the fp16 denoiser and decoders within 1e-2 relative RMS (torch's own fp16 run is at 5e-3).
+- **Same seed, same object** within the MLX backend (any integer seed). MLX draws different random numbers than torch, so the object
+  differs from the CUDA backend's for the same seed.
+- `idol.mlx` sets `MLX_ENABLE_TF32=0` (on M5, MLX would compute fp32 matmuls in TF32) and `MLX_CONV_WINOGRAD=0`
+  (Winograd convolutions double the bf16 VAE error) unless you set them. MLX reads them at its first matmul /
+  convolution, so import `idol.mlx` before running other MLX code in the same process (`from_pretrained` warns if
+  TF32 is on). It also caps MLX's buffer cache at 2 GiB while pipeline calls run.
+- `--no_optimize` turns off `mx.compile` of the sampling step. A fused Metal kernel handles RoPE, the q/k
+  normalisation and the transposes of the denoiser attention.
+
+On an M5 MacBook (10-core GPU, 32 GB, macOS 26.5, mlx 0.32.4), one image at the default settings (50 steps,
+262,144 Gaussians) takes **~3.6 minutes** (214-219 s; loading the models: 3 s), almost all of it sampling
+(~4.3 s per step, an fp16 denoiser over 12,294 tokens with guidance); the peak process footprint is ~9 GB.
+Sampling time scales linearly with `--steps`.
+
+Tests: `pip install -e ".[mlx,dev]"`, then `pytest` (no downloads), `pytest -m weights` (the released weights,
+~3 GB) and `pytest -m gated` (the gated encoders, compared with transformers / diffusers / the torch pipeline).
 
 ## More details about the model
 
